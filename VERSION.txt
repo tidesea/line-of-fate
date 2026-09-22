@@ -1,0 +1,1 @@
+v0.5.0 — scaffolding slimmed; procedural Three.js units; rollback tarball at backups/line-of-fate-v0.5.0.tar.gz
