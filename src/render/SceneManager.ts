@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { LevelDefinition } from "../config/levels.config";
-import type { FloatingAnchor, UnitState } from "../core/types";
+import type { CombatFx, FloatingAnchor, UnitState } from "../core/types";
+import { GridSystem } from "../core/GridSystem";
 import { BoardRenderer } from "./BoardRenderer";
 
 type Cell = { col: number; row: number };
@@ -11,6 +12,8 @@ export class SceneManager {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
+  private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private readonly clock = new THREE.Clock();
   private readonly board: BoardRenderer;
   private readonly resizeObserver: ResizeObserver;
   private frame = 0;
@@ -66,9 +69,11 @@ export class SceneManager {
     this.animate();
   }
 
-  sync(units: UnitState[], activeUnitId: string | null, playerFaction: string, consumedCrates: string[], moves: Cell[], attacks: Cell[], hover: Cell | null, zoom: number) {
+  sync(units: UnitState[], activeUnitId: string | null, playerFaction: string, consumedCrates: string[], moves: Cell[], attacks: Cell[], hover: Cell | null, zoom: number, fx: CombatFx | null) {
     this.board.syncUnits(units, activeUnitId, playerFaction, consumedCrates);
-    this.board.setHighlights(moves, attacks, hover);
+    const active = units.find(unit => unit.id === activeUnitId && unit.hp > 0);
+    this.board.setHighlights(moves, attacks, hover, active ? { col: active.col, row: active.row } : null);
+    if (fx) this.board.playFx(fx);
     this.setZoom(zoom, false);
   }
 
@@ -91,13 +96,13 @@ export class SceneManager {
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const hits = this.raycaster.intersectObjects(this.scene.children, true);
-    for (const hit of hits) {
-      let current: THREE.Object3D | null = hit.object;
-      while (current && !current.userData.grid) current = current.parent;
-      if (current?.userData.grid) return { col: current.userData.col as number, row: current.userData.row as number };
-    }
-    return null;
+    // Cell-based picking: intersect the ground plane only. Unit sprites / tall
+    // meshes never steal clicks from neighbouring cells.
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
+    const col = Math.round(hit.x + (this.level.cols - 1) / 2);
+    const row = Math.round(hit.z + (this.level.rows - 1) / 2);
+    return GridSystem.inBounds(col, row, this.level) ? { col, row } : null;
   }
 
   private handleMove = (event: PointerEvent) => { if (event.pointerType === "mouse") this.onHoverCell(this.pick(event)); };
@@ -129,11 +134,12 @@ export class SceneManager {
   private animate = () => {
     this.animationId = requestAnimationFrame(this.animate);
     this.frame += 1;
+    this.board.tick(this.clock.getElapsedTime());
     if (this.frame % 6 === 0) {
       const rect = this.renderer.domElement.getBoundingClientRect();
       const anchors: FloatingAnchor[] = [];
       this.board.getUnitGroups().forEach((group, id) => {
-        const p = group.position.clone(); p.y += 1.9; p.project(this.camera);
+        const p = group.position.clone(); p.y += ((group.userData.baseScale as number) ?? 1) * 1.05 + 0.2; p.project(this.camera);
         anchors.push({ id, x: (p.x * 0.5 + 0.5) * rect.width, y: (-p.y * 0.5 + 0.5) * rect.height, visible: p.z >= -1 && p.z <= 1 });
       });
       this.onProjection(anchors);

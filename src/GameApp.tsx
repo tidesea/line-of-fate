@@ -14,11 +14,14 @@ import { ObjectiveManager } from "./core/ObjectiveManager";
 import { ResourceManager } from "./core/ResourceManager";
 import { StorageManager } from "./core/StorageManager";
 import { TurnManager } from "./core/TurnManager";
-import type { FloatingAnchor, GameState, UnitState } from "./core/types";
+import type { CombatFx, FloatingAnchor, GameState, SupplyReport, UnitState } from "./core/types";
 import { SceneView } from "./render/SceneView";
 import { CardHandUI } from "./ui/CardHandUI";
 import { FloatingHUD } from "./ui/FloatingHUD";
 import { TopBarHUD } from "./ui/TopBarHUD";
+import { InitiativeBar } from "./ui/InitiativeBar";
+import { SupplyPanel } from "./ui/SupplyPanel";
+import { unitSvgDataUrl } from "./render/unitSvg";
 
 type Cell = { col: number; row: number };
 
@@ -28,7 +31,8 @@ const weightedHand = (faction: Faction, count: number): UnitKey[] => {
   const pool = factionPool(faction);
   return Array.from({ length: count }, () => {
     const roll = Math.random();
-    const tier = roll < 0.5 ? pool.filter(key => UNIT_DEFS[key].cost <= 2) : roll < 0.85 ? pool.filter(key => UNIT_DEFS[key].cost <= 4) : pool.filter(key => UNIT_DEFS[key].cost >= 6);
+    // v0.6: 1-cost cards rarer (15%), mid-cost (2–4) the backbone, heavy 15%.
+    const tier = roll < 0.15 ? pool.filter(key => UNIT_DEFS[key].cost === 1) : roll < 0.85 ? pool.filter(key => UNIT_DEFS[key].cost >= 2 && UNIT_DEFS[key].cost <= 4) : pool.filter(key => UNIT_DEFS[key].cost >= 6);
     const options = tier.length ? tier : pool;
     return options[Math.floor(Math.random() * options.length)];
   });
@@ -38,7 +42,7 @@ const blankGame = (): GameState => ({
   phase: "briefing", round: 1, level: 5, playerFaction: "human", resources: { human: 5, zombie: 5 }, units: [], hand: [], selectedCard: null,
   initiative: [], initiativeIndex: 0, activeUnitId: null, actionMoved: false, nexus: { faction: null, unitId: null, rounds: 0 },
   outposts: [],
-  consumedCrates: [], winner: null, log: ["等待指挥官选择阵营。"],
+  consumedCrates: [], winner: null, log: ["等待指挥官选择阵营。"], fx: null, supply: null,
 });
 
 const addLog = (logs: string[], message: string) => [message, ...logs].slice(0, 5);
@@ -70,32 +74,48 @@ const applyAttack = (state: GameState, attackerId: string, defenderId: string) =
   let nexus = state.nexus;
   let log = state.log;
 
+  const seq = (state.fx?.seq ?? 0) + 1;
+
   if (attacker.key === "boomer") {
+    const blast = attackDef.attack;
+    const hits: CombatFx["hits"] = [];
     units = units.map(unit => {
       if (unit.id === attacker.id) return { ...unit, hp: 0 };
-      if (unit.faction === "human" && GridSystem.chebyshev(attacker, unit) <= 2) return { ...unit, hp: unit.hp - 55 };
+      if (unit.faction === "human" && unit.hp > 0 && GridSystem.chebyshev(attacker, unit) <= 2) {
+        hits.push({ id: unit.id, key: unit.key, faction: unit.faction, col: unit.col, row: unit.row, damage: blast, killed: unit.hp - blast <= 0 });
+        return { ...unit, hp: unit.hp - blast };
+      }
       return unit;
     });
     if (nexus.unitId && (units.find(unit => unit.id === nexus.unitId)?.hp ?? 0) <= 0) nexus = { faction: null, unitId: null, rounds: 0 };
     resources.zombie += 1;
-    log = addLog(log, `${attackDef.name}酸液殉爆，范围造成 55 点伤害。`);
+    const kills = hits.filter(hit => hit.killed).length;
+    log = addLog(log, `💥 ${attackDef.shortName}殉爆：命中 ${hits.length} 个人类，各 ${blast} 伤害${kills ? `，击杀 ${kills}` : ""}。`);
     SoundSynthesizer.play("EXPLODE");
-    return { ...state, units, resources, nexus, log };
+    const fx: CombatFx = { seq, attackerId: attacker.id, attackerKey: attacker.key, attackerFaction: attacker.faction, from: { col: attacker.col, row: attacker.row }, hits, kind: "explode" };
+    return { ...state, units, resources, nexus, log, fx };
   }
 
   const result = CombatEngine.resolve(attacker, defender, units);
   units = units.map(unit => {
     if (unit.id === defender.id) {
-      const statuses = attacker.key === "walker" ? [...unit.statuses, { type: "infection" as const, rounds: 3, value: 8 }] : unit.statuses;
+      const statuses = attacker.key === "walker" ? [...unit.statuses.filter(status => status.type !== "infection"), { type: "infection" as const, rounds: 3, value: 6 }] : unit.statuses;
       return { ...unit, hp: unit.hp - result.damage, countersLeft: result.counterDamage ? Math.max(0, unit.countersLeft - 1) : unit.countersLeft, statuses };
     }
     if (unit.id === attacker.id && result.counterDamage) return { ...unit, hp: unit.hp - result.counterDamage };
     return unit;
   });
 
+  const splashHits: CombatFx["hits"] = [];
   if (attacker.key === "vehicle") {
-    units = units.map(unit => unit.faction !== attacker.faction && unit.id !== defender.id && GridSystem.chebyshev(unit, defender) === 1
-      ? { ...unit, hp: unit.hp - Math.floor(result.damage * 0.5) } : unit);
+    const splash = Math.floor(result.damage * 0.5);
+    units = units.map(unit => {
+      if (unit.faction !== attacker.faction && unit.hp > 0 && unit.id !== defender.id && GridSystem.chebyshev(unit, defender) === 1) {
+        splashHits.push({ id: unit.id, key: unit.key, faction: unit.faction, col: unit.col, row: unit.row, damage: splash, killed: unit.hp - splash <= 0 });
+        return { ...unit, hp: unit.hp - splash };
+      }
+      return unit;
+    });
   }
 
   let updatedDefender = units.find(unit => unit.id === defender.id)!;
@@ -115,17 +135,27 @@ const applyAttack = (state: GameState, attackerId: string, defenderId: string) =
   if (killedDefender) {
     resources[attacker.faction] += ResourceManager.killBounty(attacker, defender);
     if (defender.faction === "zombie") resources.zombie += 1;
-    if (defender.key === "crawler") units = units.map(unit => unit.faction === "zombie" && unit.hp > 0 && GridSystem.chebyshev(unit, defender) === 1 ? { ...unit, hp: Math.min(UNIT_DEFS[unit.key].maxHp, unit.hp + 10) } : unit);
+    if (defender.key === "crawler") units = units.map(unit => unit.faction === "zombie" && unit.hp > 0 && GridSystem.chebyshev(unit, defender) === 1 ? { ...unit, hp: Math.min(UNIT_DEFS[unit.key].maxHp, unit.hp + 8) } : unit);
     if (attacker.key === "mother" && defender.faction === "human") {
-      units.push({ id: uid(), key: "crawler", faction: "zombie", col: defender.col, row: defender.row, hp: 35, countersLeft: 1, moved: true, acted: true, deployedRound: state.round, statuses: [] });
+      units.push({ id: uid(), key: "crawler", faction: "zombie", col: defender.col, row: defender.row, hp: UNIT_DEFS.crawler.maxHp, countersLeft: 1, moved: true, acted: true, deployedRound: state.round, statuses: [] });
     }
   }
   if (killedAttacker && attacker.faction === "zombie") resources.zombie += 1;
   if ((killedDefender && nexus.unitId === defender.id) || (killedAttacker && nexus.unitId === attacker.id)) nexus = { faction: null, unitId: null, rounds: 0 };
 
-  log = addLog(log, `${attackDef.shortName} → ${UNIT_DEFS[defender.key].shortName}：${result.damage} 伤害${result.critical ? " · 暴击" : ""}${result.meleePenalty ? " · 贴身衰减" : ""}${result.counterDamage ? ` · 反击 ${result.counterDamage}` : ""}`);
-  SoundSynthesizer.play(attackDef.maxRange > 1 ? "SHOOT" : "HIT");
-  return { ...state, units, resources, nexus, log };
+  const side = (faction: string) => faction === "human" ? "🔵" : "🟢";
+  const tags = [result.critical ? "暴击" : "", result.headshot ? "爆头" : "", result.meleePenalty ? "贴身衰减" : "", result.knockback ? "击退" : ""].filter(Boolean);
+  log = addLog(log, `${side(attacker.faction)}${attackDef.shortName} ⟶ ${side(defender.faction)}${UNIT_DEFS[defender.key].shortName}：-${result.damage}${tags.length ? `（${tags.join("·")}）` : ""}${killedDefender ? " ☠击杀" : ""}${result.counterDamage ? ` · 反击 -${result.counterDamage}${killedAttacker ? " ☠" : ""}` : ""}${splashHits.length ? ` · 溅射 ${splashHits.length} 个` : ""}`);
+  SoundSynthesizer.play(distance > 1 ? "SHOOT" : "HIT");
+  const fx: CombatFx = {
+    seq, attackerId: attacker.id, attackerKey: attacker.key, attackerFaction: attacker.faction,
+    from: { col: attacker.col, row: attacker.row },
+    hits: [{ id: defender.id, key: defender.key, faction: defender.faction, col: updatedDefender.col, row: updatedDefender.row, damage: result.damage, killed: killedDefender }, ...splashHits],
+    counter: result.counterDamage ? { damage: result.counterDamage, killed: killedAttacker } : undefined,
+    kind: distance > 1 ? "shot" : "melee",
+    tag: tags[0],
+  };
+  return { ...state, units, resources, nexus, log, fx };
 };
 
 export default function GameApp() {
@@ -217,6 +247,12 @@ export default function GameApp() {
 
   const finishPlayerAction = useCallback(() => setGame(current => nextLivingTurn(current)), []);
 
+  const continueFromSupply = useCallback(() => {
+    setGame(current => current.phase !== "supply" ? current : { ...current, phase: "deploy", round: current.round + 1, supply: null, log: addLog(current.log, `第 ${current.round + 1} 回合：部署阶段。`) });
+    SoundSynthesizer.play("CLICK");
+  }, []);
+  const [hoverUnitId, setHoverUnitId] = useState<string | null>(null);
+
   const moveUnit = useCallback((state: GameState, unitId: string, cell: Cell) => {
     const consumedCrates = state.consumedCrates.slice();
     const resources = { ...state.resources };
@@ -301,24 +337,36 @@ export default function GameApp() {
           return { ...current, ...settled, phase: "over", log: addLog(current.log, `${settled.winner === "human" ? "人类" : "僵尸"}连续控制中央据点五回合，战役结束。`) };
         }
 
+        let infectionDamage = 0;
         let units = current.units.map(unit => {
-          const infection = unit.statuses.filter(status => status.type === "infection").reduce((sum, status) => sum + (status.value || 8), 0);
+          if (unit.hp <= 0) return unit;
+          const infection = unit.statuses.filter(status => status.type === "infection").reduce((sum, status) => sum + (status.value || 6), 0);
+          infectionDamage += infection;
           return { ...unit, hp: unit.hp - infection, statuses: unit.statuses.map(status => ({ ...status, rounds: status.rounds - 1 })).filter(status => status.rounds > 0) };
         });
+        const losses = { human: units.filter(unit => unit.faction === "human" && unit.hp <= 0).length, zombie: units.filter(unit => unit.faction === "zombie" && unit.hp <= 0).length };
+        units = units.filter(unit => unit.hp > 0);
+        let spawned = 0;
         let working: GameState = { ...current, ...settled, units };
         units.filter(unit => unit.key === "mother" && unit.hp > 0).forEach(mother => {
           const cell = findFreeAdjacent(mother, working);
           if (cell) {
-            const spawn: UnitState = { id: uid(), key: "crawler", faction: "zombie", ...cell, hp: 35, countersLeft: 1, moved: false, acted: false, deployedRound: current.round + 1, statuses: [] };
+            spawned += 1;
+            const spawn: UnitState = { id: uid(), key: "crawler", faction: "zombie", ...cell, hp: UNIT_DEFS.crawler.maxHp, countersLeft: 1, moved: false, acted: false, deployedRound: current.round + 1, statuses: [] };
             units = [...units, spawn]; working = { ...working, units };
           }
         });
-        const resources = {
-          human: current.resources.human + ResourceManager.income("human", settled.outposts),
-          zombie: current.resources.zombie + ResourceManager.income("zombie", settled.outposts),
+        const income = {
+          human: ResourceManager.incomeBreakdown("human", settled.outposts, settled.nexus.faction),
+          zombie: ResourceManager.incomeBreakdown("zombie", settled.outposts, settled.nexus.faction),
         };
-        const hand = [...current.hand, ...weightedHand(current.playerFaction, Math.max(0, 4 - current.hand.length))];
-        return { ...working, units, resources, hand, phase: "deploy", round: current.round + 1, initiative: [], initiativeIndex: 0, activeUnitId: null, actionMoved: false, selectedCard: null, log: addLog(current.log, `第 ${current.round} 回合结算。据点：${settled.nexus.faction ? `${settled.nexus.faction === "human" ? "人类" : "僵尸"} ${settled.nexus.rounds}/5` : "无人控制"}。`) };
+        const resources = { human: current.resources.human + income.human.total, zombie: current.resources.zombie + income.zombie.total };
+        const newCards = weightedHand(current.playerFaction, Math.max(0, 4 - current.hand.length));
+        const hand = [...current.hand, ...newCards];
+        const nexusLine = settled.nexus.faction ? `${settled.nexus.faction === "human" ? "人类" : "僵尸"}控制 ${settled.nexus.rounds}/5` : "无人控制";
+        const supply: SupplyReport = { round: current.round, income, infectionDamage, spawned, nexusLine, losses, newCards };
+        SoundSynthesizer.play("CAPTURE");
+        return { ...working, units, resources, hand, supply, phase: "supply", initiative: [], initiativeIndex: 0, activeUnitId: null, actionMoved: false, selectedCard: null, log: addLog(current.log, `第 ${current.round} 回合结束 → 补给阶段。据点：${nexusLine}。`) };
       });
     }, 720);
     return () => window.clearTimeout(timer);
@@ -335,6 +383,9 @@ export default function GameApp() {
   }, [game]);
 
   const selectedCard = game.selectedCard === null ? null : UNIT_DEFS[game.hand[game.selectedCard]];
+  const hoverUnit = hoverCell ? game.units.find(unit => unit.hp > 0 && unit.col === hoverCell.col && unit.row === hoverCell.row) : undefined;
+  const inspectUnit = hoverUnit || game.units.find(unit => unit.id === hoverUnitId && unit.hp > 0) || activeUnit;
+  const lastFx = game.fx;
   const objectiveOwner = game.nexus.faction === "human" ? "人类" : game.nexus.faction === "zombie" ? "僵尸" : "争夺中";
 
   return (
@@ -353,8 +404,17 @@ export default function GameApp() {
         </aside>
 
         <div className="battle-stage">
-          <SceneView level={level} units={game.units} activeUnitId={game.activeUnitId} playerFaction={game.playerFaction} consumedCrates={game.consumedCrates} moveCells={moveCells} attackCells={attackCells} hoverCell={hoverCell} zoom={zoom} onCellClick={handleCellClick} onHover={setHoverCell} onProjection={setAnchors} onZoomChange={setZoom} />
+          <SceneView level={level} units={game.units} activeUnitId={game.activeUnitId} playerFaction={game.playerFaction} consumedCrates={game.consumedCrates} moveCells={moveCells} attackCells={attackCells} hoverCell={hoverCell} zoom={zoom} fx={game.fx} onCellClick={handleCellClick} onHover={setHoverCell} onProjection={setAnchors} onZoomChange={setZoom} />
           <FloatingHUD anchors={anchors} units={game.units} activeId={game.activeUnitId} />
+          {(game.phase === "combat" || game.phase === "objective") && <InitiativeBar game={game} onHover={setHoverUnitId} />}
+          {lastFx && game.phase === "combat" && <div className={`combat-banner ${lastFx.attackerFaction}`} key={lastFx.seq}>
+            <img src={unitSvgDataUrl(lastFx.attackerKey)} alt="" />
+            <b>{UNIT_DEFS[lastFx.attackerKey].shortName}</b>
+            <span className="arrow">{lastFx.kind === "explode" ? "💥" : lastFx.kind === "melee" ? "⚔" : "➶"}</span>
+            {lastFx.hits.slice(0, 3).map(hit => <span className={`hit ${hit.killed ? "killed" : ""}`} key={hit.id}><img src={unitSvgDataUrl(hit.key)} alt="" />{UNIT_DEFS[hit.key].shortName} -{hit.damage}{hit.killed ? " ☠" : ""}</span>)}
+            {lastFx.counter && <em>反击 -{lastFx.counter.damage}{lastFx.counter.killed ? " ☠" : ""}</em>}
+            {lastFx.tag && <i>{lastFx.tag}</i>}
+          </div>}
           <div className="stage-caption"><span>LEVEL {String(level.id).padStart(2, "0")} · {level.name}</span><b>{hoverCell ? `格位 ${String(hoverCell.col).padStart(2, "0")} · ${String(hoverCell.row).padStart(2, "0")}` : `${level.cols}×${level.rows} · ${level.subtitle}`}</b></div>
           <div className="zoom-controls" aria-label="战场缩放">
             <button onClick={() => setZoom(value => Math.max(.72, Number((value - .15).toFixed(2))))} aria-label="缩小战场"><Minus size={16} /></button>
@@ -363,29 +423,33 @@ export default function GameApp() {
             <button onClick={() => setZoom(1)} aria-label="重置缩放"><Maximize2 size={15} /></button>
             <small>双指缩放</small>
           </div>
-          {selectedCard && <div className="deployment-tip"><span>{selectedCard.glyph}</span><div><b>部署 {selectedCard.name}</b><small>点击己方高亮部署线中的空格</small></div></div>}
-          {playerTurn && activeUnit && <div className="turn-callout"><span>当前行动</span><b>{UNIT_DEFS[activeUnit.key].name}</b><small>{game.actionMoved ? "已移动 · 选择射程内敌人或结束行动" : "蓝格移动 · 红格攻击"}</small></div>}
+          {selectedCard && <div className="deployment-tip"><span><img src={unitSvgDataUrl(selectedCard.key)} alt={selectedCard.glyph} /></span><div><b>部署 {selectedCard.name}</b><small>点击己方高亮部署线中的空格</small></div></div>}
+          {playerTurn && activeUnit && <div className="turn-callout"><span>当前行动</span><b><img className="callout-portrait" src={unitSvgDataUrl(activeUnit.key)} alt="" />{UNIT_DEFS[activeUnit.key].name}</b><small>{game.actionMoved ? "已移动 · 选择射程内敌人或结束行动" : "蓝格移动 · 红格攻击"}</small></div>}
         </div>
 
         <aside className="intel-panel">
           <div className="panel-kicker"><Info size={15} />战场情报</div>
           <div className="unit-counts"><div><span>人类单位</span><b>{game.units.filter(u => u.faction === "human" && u.hp > 0).length}</b></div><div><span>僵尸单位</span><b>{game.units.filter(u => u.faction === "zombie" && u.hp > 0).length}</b></div></div>
+          {inspectUnit && <UnitInspector unit={inspectUnit} active={inspectUnit.id === game.activeUnitId} />}
           <div className="combat-log">{game.log.map((line, index) => <p className={index === 0 ? "latest" : ""} key={`${line}-${index}`}><i />{line}</p>)}</div>
         </aside>
       </section>
 
       <footer className="command-deck">
-        <div className="deck-label"><span>TACTICAL HAND</span><b>{game.phase === "deploy" ? "选择卡牌并部署" : game.phase === "combat" ? "行动序列执行中" : "战场指令"}</b></div>
+        <div className="deck-label"><span>TACTICAL HAND</span><b>{game.phase === "deploy" ? "选择卡牌并部署" : game.phase === "combat" ? "行动序列执行中" : game.phase === "supply" ? "补给 / 生产阶段" : "战场指令"}</b></div>
         <CardHandUI cards={game.hand} resources={game.resources[game.playerFaction]} selected={game.selectedCard} disabled={game.phase !== "deploy"} onSelect={index => { setGame(current => ({ ...current, selectedCard: current.selectedCard === index ? null : index })); SoundSynthesizer.play("CLICK"); }} />
         <div className="deck-actions">
           {game.phase === "deploy" && <button className="primary-action" onClick={startCombat}><Swords size={18} />进入交战<ChevronRight size={17} /></button>}
           {playerTurn && <button className="primary-action" onClick={finishPlayerAction}><FastForward size={18} />结束行动<ChevronRight size={17} /></button>}
-          {!playerTurn && game.phase !== "deploy" && <div className="waiting"><i />{game.phase === "combat" ? "敌方行动中" : "正在结算"}</div>}
+          {game.phase === "supply" && <button className="primary-action" onClick={continueFromSupply}>领取补给<ChevronRight size={17} /></button>}
+          {!playerTurn && game.phase !== "deploy" && game.phase !== "supply" && <div className="waiting"><i />{game.phase === "combat" ? "敌方行动中" : "正在结算"}</div>}
         </div>
       </footer>
 
+      {game.phase === "supply" && game.supply && <SupplyPanel report={game.supply} game={game} onContinue={continueFromSupply} />}
+
       {game.phase === "briefing" && <div className="modal-layer"><section className="briefing-card">
-        <span className="modal-code">OPERATION // FATE LINE</span><h1>命运防线</h1><p>部署你的卡牌单位，在 15 × 9 的微缩战场上控制中央据点。五个回合，决定谁能活着守住这条线。</p>
+        <span className="modal-code">OPERATION // FATE LINE</span><h1>命运防线</h1><p>部署你的卡牌单位，在微缩战场上控制中央据点。每回合：部署 → 按速度交错行动 → 补给生产。连续守住五回合即胜。</p>
         <div className="choice-block"><label>选择阵营</label><div className="faction-choice"><button className={factionChoice === "human" ? "active human" : "human"} onClick={() => setFactionChoice("human")}><ShieldIcon />人类先锋军<small>阵地、射程、后勤</small></button><button className={factionChoice === "zombie" ? "active zombie" : "zombie"} onClick={() => setFactionChoice("zombie")}><SkullIcon />僵尸军团<small>尸潮、感染、滚雪球</small></button></div></div>
         <div className="choice-block level-picker"><label>战场 · 20 关</label><div className="level-grid">{LEVEL_LIST.map(item => <button className={levelChoice === item.id ? "active" : ""} key={item.id} onClick={() => setLevelChoice(item.id)}><b>{String(item.id).padStart(2, "0")}</b><span>{item.name}</span></button>)}</div></div>
         <div className="level-readout">
@@ -401,6 +465,22 @@ export default function GameApp() {
         <span className="modal-code">BATTLE REPORT // ROUND {game.round}</span><h1>{game.winner === game.playerFaction ? "防线守住了" : "阵线失守"}</h1><p>{game.winner === "human" ? "人类先锋军" : "僵尸军团"}完成了中央据点的五回合连续控制。</p><div className="result-stats"><span>回合<b>{game.round}</b></span><span>幸存单位<b>{game.units.filter(u => u.faction === game.playerFaction && u.hp > 0).length}</b></span><span>据点控制<b>5/5</b></span></div><button className="launch" onClick={() => setGame(blankGame())}><RotateCcw size={18} />重新作战</button>
       </section></div>}
     </main>
+  );
+}
+
+function UnitInspector({ unit, active }: { unit: UnitState; active: boolean }) {
+  const def = UNIT_DEFS[unit.key];
+  return (
+    <div className={`unit-inspector ${unit.faction} ${active ? "active" : ""}`}>
+      <img src={unitSvgDataUrl(unit.key)} alt={def.name} />
+      <div>
+        <b>{def.name}{active && <small>行动中</small>}</b>
+        <span>{def.role} · 速度 {def.speed}</span>
+        <div className="inspector-hp"><i style={{ width: `${Math.max(0, unit.hp / def.maxHp) * 100}%` }} /><em>{Math.max(0, unit.hp)}/{def.maxHp}</em></div>
+        <p>攻 {def.attack} · 射程 {def.minRange}–{def.maxRange} · 移动 {def.move} · 反击 {unit.countersLeft}/{def.counters}</p>
+        <p className="ability">{def.ability}</p>
+      </div>
+    </div>
   );
 }
 

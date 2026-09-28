@@ -1,7 +1,7 @@
 import { Crosshair, Radio, Shield, Skull } from "lucide-react";
 import type { GameState } from "../core/types";
 
-const phaseLabel = { briefing: "任务简报", deploy: "部署阶段", combat: "交战阶段", objective: "目标结算", over: "战役结束" };
+const phaseLabel = { briefing: "任务简报", deploy: "部署阶段", combat: "交战阶段", objective: "目标结算", supply: "补给阶段", over: "战役结束" };
 
 export function TopBarHUD({ game }: { game: GameState }) {
   const humanActive = game.playerFaction === "human";
@@ -15,7 +15,7 @@ export function TopBarHUD({ game }: { game: GameState }) {
         <span className="eyebrow">ROUND {String(game.round).padStart(2, "0")}</span>
         <strong>{phaseLabel[game.phase]}</strong>
         <div className="initiative-pips" aria-label="阶段进度">
-          {["deploy", "combat", "objective"].map(phase => <i key={phase} className={game.phase === phase ? "active" : ""} />)}
+          {["deploy", "combat", "supply"].map(phase => <i key={phase} title={phaseLabel[phase as keyof typeof phaseLabel]} className={game.phase === phase || (phase === "supply" && game.phase === "objective") ? "active" : ""} />)}
         </div>
       </div>
       <div className="resource-strip">

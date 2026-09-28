@@ -15,7 +15,7 @@ const defaults = (): SaveData => ({
   version: "3.0.0",
   updatedTimestamp: Date.now(),
   playerProfile: { selectedFaction: "human", totalWins: 0, totalLosses: 0, dnaTokens: 0 },
-  unlockedCards: { human: ["civilian", "guard", "soldier", "vehicle", "specialist"], zombie: ["crawler", "walker", "smoker", "boomer", "stalker", "abomination", "mother"] },
+  unlockedCards: { human: ["civilian", "guard", "marksman", "soldier", "vehicle", "specialist"], zombie: ["crawler", "walker", "smoker", "boomer", "stalker", "abomination", "mother"] },
   campaignProgress: { humanHighestLevel: 1, zombieHighestLevel: 1, levelRecords: {} },
   userSettings: { musicVolume: 0.35, sfxVolume: 0.65, showFloatingDamage: true, fastCombatMode: false },
 });

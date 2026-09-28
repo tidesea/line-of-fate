@@ -1,6 +1,6 @@
 import type { Faction, UnitKey } from "../config/units.config";
 
-export type GamePhase = "briefing" | "deploy" | "combat" | "objective" | "over";
+export type GamePhase = "briefing" | "deploy" | "combat" | "objective" | "supply" | "over";
 
 export interface StatusEffect {
   type: "infection" | "stun" | "smoke";
@@ -48,6 +48,32 @@ export interface GameState {
   consumedCrates: string[];
   winner: Faction | null;
   log: string[];
+  /** Latest combat event for attack / death feedback (seq increments per event). */
+  fx: CombatFx | null;
+  /** Filled when entering the supply phase between rounds. */
+  supply: SupplyReport | null;
+}
+
+export interface CombatFx {
+  seq: number;
+  attackerId: string;
+  attackerKey: UnitKey;
+  attackerFaction: Faction;
+  from: { col: number; row: number };
+  hits: Array<{ id: string; key: UnitKey; faction: Faction; col: number; row: number; damage: number; killed: boolean }>;
+  counter?: { damage: number; killed: boolean };
+  kind: "shot" | "melee" | "explode";
+  tag?: string;
+}
+
+export interface SupplyReport {
+  round: number;
+  income: Record<Faction, { base: number; outposts: number; nexus: number; total: number }>;
+  infectionDamage: number;
+  spawned: number;
+  nexusLine: string;
+  losses: Record<Faction, number>;
+  newCards: UnitKey[];
 }
 
 export interface FloatingAnchor {

@@ -1,6 +1,8 @@
-# 命运防线 · Line of Fate
+# 命运防线 · Line of Fate（v0.6.0-demo）
 
-纯前端 Three.js 双阵营轻量网页战棋：部署卡牌、执行战术、争夺中央据点。
+纯前端 Three.js 棋盘 + **SVG→canvas 广告牌单位** 的双阵营轻量网页战棋：部署卡牌、按速度交错行动、补给生产、争夺中央据点。
+
+DEMO 要点：平民大幅削弱；新增 3 费「猎尸神射手」；护卫 / 士兵 / 特警加强；格点选中（大单位不再挡邻格点击）；行动序列条 + 补给阶段面板。
 
 本仓库为游戏干净源码（不含 `node_modules` 与编译产物）。更完整的目录导读见 [`原始碼閱讀指南.md`](./原始碼閱讀指南.md)；产品说明见 [`docs/《命运防线》产品需求文档.md`](./docs/《命运防线》产品需求文档.md)。
 
@@ -8,7 +10,7 @@
 
 - TypeScript + React 19
 - Next.js 16（经 vinext：Vite + Cloudflare Workers 本地运行）
-- Three.js 场景与程序化单位模型
+- Three.js 场景 + SVG 广告牌精灵（`src/render/unitSvg.ts` · `public/art/svg/`）
 - Tailwind CSS 4（界面样式主要在 `app/globals.css`）
 - 包管理：pnpm
 

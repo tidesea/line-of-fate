@@ -1,6 +1,7 @@
 import { UNIT_DEFS } from "../config/units.config";
 import type { UnitKey } from "../config/units.config";
 import { BalanceEngine } from "../core/BalanceEngine";
+import { unitSvgDataUrl } from "../render/unitSvg";
 
 interface Props {
   cards: UnitKey[];
@@ -27,7 +28,7 @@ export function CardHandUI({ cards, resources, selected, disabled, onSelect }: P
             style={{ "--unit-color": def.color, "--unit-accent": def.accent } as React.CSSProperties}
           >
             <span className="cost">{def.cost}</span>
-            <span className="unit-glyph">{def.glyph}</span>
+            <span className="unit-glyph"><img src={unitSvgDataUrl(key)} alt={def.glyph} /></span>
             <span className="card-copy"><b>{def.shortName}</b><small>{def.role}</small></span>
             <span className="card-stats"><i>HP {def.maxHp}</i><i>ATK {def.attack}</i><i>PWR {power}</i></span>
           </button>

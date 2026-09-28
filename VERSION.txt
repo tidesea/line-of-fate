@@ -1,1 +1,1 @@
-v0.5.0 — scaffolding slimmed; procedural Three.js units; rollback tarball at backups/line-of-fate-v0.5.0.tar.gz
+v0.6.0-demo — SVG billboard units; civilian nerfed; marksman + human buffs; cell-pick / initiative / supply UX

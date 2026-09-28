@@ -10,9 +10,11 @@ export class AIDecisionTree {
     if (!affordable.length) return null;
     const nexusThreat = state.nexus.faction && state.nexus.faction !== faction;
     const preferred = nexusThreat
-      ? affordable.filter(key => ["guard", "soldier", "boomer", "stalker", "abomination"].includes(key))
+      ? affordable.filter(key => ["guard", "marksman", "soldier", "boomer", "stalker", "abomination"].includes(key))
       : affordable;
-    const pool = preferred.length ? preferred : affordable;
+    const base = preferred.length ? preferred : affordable;
+    // Don't spam 1-cost fodder once we can afford real units.
+    const pool = state.resources[faction] >= 3 && base.some(key => UNIT_DEFS[key].cost > 1) ? base.filter(key => UNIT_DEFS[key].cost > 1) : base;
     if (state.resources[faction] >= 6) return pool.slice().sort((a, b) => UNIT_DEFS[b].cost - UNIT_DEFS[a].cost)[0];
     const meleeCount = state.units.filter(u => u.faction === faction && UNIT_DEFS[u.key].maxRange === 1).length;
     const rangedCount = state.units.filter(u => u.faction === faction && UNIT_DEFS[u.key].maxRange > 1).length;
@@ -40,7 +42,7 @@ export class AIDecisionTree {
     const dist = GridSystem.chebyshev(unit, target);
     const hill = target.col === level.nexus.col && target.row === level.nexus.row ? 100 : 0;
     const killable = target.hp <= def.attack ? 50 : 0;
-    const threat = ["soldier", "vehicle", "boomer", "mother"].includes(target.key) ? 30 : 0;
+    const threat = ["soldier", "marksman", "specialist", "vehicle", "boomer", "mother"].includes(target.key) ? 30 : 0;
     return hill + killable + threat - dist * 3;
   }
 

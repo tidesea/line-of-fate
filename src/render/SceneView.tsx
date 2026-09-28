@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { LevelDefinition } from "../config/levels.config";
-import type { FloatingAnchor, UnitState } from "../core/types";
+import type { CombatFx, FloatingAnchor, UnitState } from "../core/types";
 import { SceneManager } from "./SceneManager";
 
 type Cell = { col: number; row: number };
@@ -17,6 +17,7 @@ interface Props {
   attackCells: Cell[];
   hoverCell: Cell | null;
   zoom: number;
+  fx: CombatFx | null;
   onCellClick: (cell: Cell) => void;
   onHover: (cell: Cell | null) => void;
   onProjection: (anchors: FloatingAnchor[]) => void;
@@ -47,8 +48,8 @@ export function SceneView(props: Props) {
   }, [props.level]);
 
   useEffect(() => {
-    manager.current?.sync(props.units, props.activeUnitId, props.playerFaction, props.consumedCrates, props.moveCells, props.attackCells, props.hoverCell, props.zoom);
-  }, [props.units, props.activeUnitId, props.playerFaction, props.consumedCrates, props.moveCells, props.attackCells, props.hoverCell, props.zoom]);
+    manager.current?.sync(props.units, props.activeUnitId, props.playerFaction, props.consumedCrates, props.moveCells, props.attackCells, props.hoverCell, props.zoom, props.fx);
+  }, [props.units, props.activeUnitId, props.playerFaction, props.consumedCrates, props.moveCells, props.attackCells, props.hoverCell, props.zoom, props.fx]);
 
   return <div ref={host} className="scene-host" aria-label={`${props.level.cols} 列 × ${props.level.rows} 行战术棋盘`} />;
 }
